@@ -1,0 +1,325 @@
+import streamlit as st
+import requests
+import pandas as pd
+import json
+import os
+
+# Set up the Streamlit page
+st.set_page_config(page_title="FTC Team Scouting Dashboard", page_icon="🤖", layout="wide")
+st.title("FTC Team Scouting Dashboard")
+
+# --- Constants & Configuration ---
+BASE_URL = "https://api.ftcscout.org/rest/v1"
+PROFILES_FILE = "team_profiles.json"
+
+# --- Helper Functions ---
+@st.cache_data(ttl=600)
+def fetch_team_info(team_number):
+    url = f"{BASE_URL}/teams/{team_number}"
+    try:
+        response = requests.get(url)
+        return response.json() if response.status_code == 200 else None
+    except:
+        return None
+
+@st.cache_data(ttl=600)
+def fetch_team_events(team_number, season):
+    url = f"{BASE_URL}/teams/{team_number}/events/{season}"
+    try:
+        response = requests.get(url)
+        return response.json() if response.status_code == 200 else []
+    except:
+        return []
+
+@st.cache_data(ttl=600)
+def fetch_event_matches(season, event_code):
+    url = f"{BASE_URL}/events/{season}/{event_code}/matches"
+    try:
+        response = requests.get(url)
+        return response.json() if response.status_code == 200 else []
+    except:
+        return []
+
+def get_last_event_before(events, target_event_code):
+    """Finds the last event in chronological order before the target_event_code."""
+    if not events:
+        return None
+    # Filter out the target event and any without stats
+    valid_events = [e for e in events if e.get('eventCode') != target_event_code and e.get('stats')]
+    if not valid_events:
+        return None
+    # Sort by updatedAt as a proxy for chronological order
+    valid_events.sort(key=lambda x: x.get('updatedAt', ''), reverse=True)
+    return valid_events[0]
+
+def calculate_epa(matches, team_number, K=0.5, M=0.0):
+    """
+    Simplistic EPA calculation based on matches in the event.
+    Formula: delta = (K * ((alliance_score - predicted_alliance_EPA) - M * (opponent_score - predicted_opponent_EPA))) / teams_per_alliance
+    new_EPA = old_EPA + delta
+    """
+    epa = 0.0
+    epa_history = []
+    
+    # Sort matches by ID/time to ensure chronological processing
+    sorted_matches = sorted(matches, key=lambda x: x.get('actualStartTime', x.get('id', 0)))
+    
+    for match in sorted_matches:
+        scores = match.get('scores', {})
+        teams = match.get('teams', [])
+        
+        # Find which alliance the team was on
+        team_entry = next((t for t in teams if t.get('teamNumber') == team_number), None)
+        if not team_entry or not match.get('hasBeenPlayed'):
+            continue
+            
+        alliance = team_entry.get('alliance')
+        opp_alliance = "Blue" if alliance == "Red" else "Red"
+        
+        alliance_score = scores.get(alliance.lower(), {}).get('totalPointsNp', 0)
+        opponent_score = scores.get(opp_alliance.lower(), {}).get('totalPointsNp', 0)
+        
+        # Simple prediction: use current EPA as prediction for the whole alliance
+        # Assuming 2 teams per alliance
+        predicted_alliance_EPA = epa * 2 
+        predicted_opponent_EPA = 0 # unknown without full event context
+        
+        teams_per_alliance = 2
+        
+        delta = (K * ((alliance_score - predicted_alliance_EPA) - M * (opponent_score - predicted_opponent_EPA))) / teams_per_alliance
+        epa += delta
+        epa_history.append(epa)
+        
+    return epa, epa_history
+
+def load_profiles():
+    if os.path.exists(PROFILES_FILE):
+        try:
+            with open(PROFILES_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_profile(team_number, profile_text):
+    profiles = load_profiles()
+    profiles[str(team_number)] = profile_text
+    with open(PROFILES_FILE, 'w') as f:
+        json.dump(profiles, f)
+
+# --- Sidebar Inputs ---
+with st.sidebar:
+    st.header("Search Settings")
+    team_num = st.number_input("Team Number", min_value=1, value=18225)
+    season = st.number_input("Season", min_value=2019, max_value=2026, value=2024)
+    target_event = st.text_input("Championship Event Code", value="ILCMP")
+    
+    if st.button("Refresh Data"):
+        st.cache_data.clear()
+
+# Fetch data
+team_data = fetch_team_info(team_num)
+all_events = fetch_team_events(team_num, season)
+last_event = get_last_event_before(all_events, target_event)
+target_event_data = next((e for e in all_events if e.get('eventCode') == target_event), None)
+
+# --- Main Interface ---
+if team_data:
+    st.header(f"Team {team_num}: {team_data.get('name')}")
+    st.write(f"**Location:** {team_data.get('city')}, {team_data.get('state')}, {team_data.get('country')}")
+    
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 Last Event Stats", 
+        "🏆 ILCMP Stats", 
+        "📈 EPA Ranking", 
+        "📝 Team Profile"
+    ])
+    
+    # --- Tab 1: Last Event Stats ---
+    with tab1:
+        if last_event:
+            st.subheader(f"Data from {last_event.get('eventCode')}")
+            stats = last_event.get('stats', {})
+            
+            # Key Stats
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Rank", stats.get('rank', 'N/A'))
+            col2.metric("OPR", round(stats.get('opr', {}).get('totalPointsNp', 0), 2))
+            col3.metric("Record", f"{stats.get('wins', 0)}-{stats.get('losses', 0)}-{stats.get('ties', 0)}")
+            col4.metric("Avg Score", round(stats.get('avg', {}).get('totalPoints', 0), 2))
+            
+            # More Detailed Stats
+            st.markdown("### Performance Breakdown")
+            detail_cols = st.columns(3)
+            with detail_cols[0]:
+                st.write("**Averages**")
+                st.write(f"Auto AVG: {round(stats.get('avg', {}).get('autoPoints', 0), 2)}")
+                st.write(f"Teleop AVG: {round(stats.get('avg', {}).get('dcPoints', 0), 2)}")
+                st.write(f"Penalty AVG: {round(stats.get('avg', {}).get('penaltyPointsByOpp', 0), 2)}")
+            with detail_cols[1]:
+                st.write("**OPRs**")
+                st.write(f"Auto OPR: {round(stats.get('opr', {}).get('autoPoints', 0), 2)}")
+                st.write(f"Teleop OPR: {round(stats.get('opr', {}).get('dcPoints', 0), 2)}")
+                st.write(f"NP OPR: {round(stats.get('opr', {}).get('totalPointsNp', 0), 2)}")
+            with detail_cols[2]:
+                st.write("**Other**")
+                st.write(f"TBP: {stats.get('tb1', 'N/A')}")
+                st.write(f"RS: {stats.get('rp', 'N/A')}")
+                st.write(f"NP Max: {stats.get('max', {}).get('totalPointsNp', 'N/A')}")
+
+            # Matches for Last Event
+            st.markdown("### Match History")
+            matches = fetch_event_matches(season, last_event.get('eventCode'))
+            team_matches = [m for m in matches if any(t.get('teamNumber') == team_num for t in m.get('teams', []))]
+            
+            if team_matches:
+                match_rows = []
+                for m in team_matches:
+                    scores = m.get('scores', {})
+                    red_score = scores.get('red', {})
+                    blue_score = scores.get('blue', {})
+                    team_entry = next(t for t in m.get('teams') if t.get('teamNumber') == team_num)
+                    alliance = team_entry.get('alliance')
+                    
+                    match_rows.append({
+                        "Match": f"{m.get('tournamentLevel')} {m.get('id')}",
+                        "Alliance": alliance,
+                        "Total Points": red_score.get('totalPoints') if alliance == "Red" else blue_score.get('totalPoints'),
+                        "Auto": red_score.get('autoPoints') if alliance == "Red" else blue_score.get('autoPoints'),
+                        "Teleop": red_score.get('dcPoints') if alliance == "Red" else blue_score.get('dcPoints'),
+                        "Penalty": red_score.get('penaltyPointsByOpp') if alliance == "Red" else blue_score.get('penaltyPointsByOpp'),
+                        "Result": "W" if (red_score.get('totalPoints', 0) > blue_score.get('totalPoints', 0) and alliance == "Red") or 
+                                       (blue_score.get('totalPoints', 0) > red_score.get('totalPoints', 0) and alliance == "Blue") else "L"
+                    })
+                st.table(pd.DataFrame(match_rows))
+        else:
+            st.info("No event data found prior to the target championship.")
+
+    # --- Tab 2: ILCMP Stats ---
+    with tab2:
+        if target_event_data and target_event_data.get('stats'):
+            st.subheader(f"Championship Performance: {target_event}")
+            stats = target_event_data.get('stats', {})
+            
+            # Key Stats (Copy-pasted logic from Tab 1 for same layout)
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Rank", stats.get('rank', 'N/A'))
+            col2.metric("OPR", round(stats.get('opr', {}).get('totalPointsNp', 0), 2))
+            col3.metric("Record", f"{stats.get('wins', 0)}-{stats.get('losses', 0)}-{stats.get('ties', 0)}")
+            col4.metric("Avg Score", round(stats.get('avg', {}).get('totalPoints', 0), 2))
+            
+            # More Detailed Stats
+            st.markdown("### Performance Breakdown")
+            detail_cols = st.columns(3)
+            with detail_cols[0]:
+                st.write("**Averages**")
+                st.write(f"Auto AVG: {round(stats.get('avg', {}).get('autoPoints', 0), 2)}")
+                st.write(f"Teleop AVG: {round(stats.get('avg', {}).get('dcPoints', 0), 2)}")
+                st.write(f"Penalty AVG: {round(stats.get('avg', {}).get('penaltyPointsByOpp', 0), 2)}")
+            with detail_cols[1]:
+                st.write("**OPRs**")
+                st.write(f"Auto OPR: {round(stats.get('opr', {}).get('autoPoints', 0), 2)}")
+                st.write(f"Teleop OPR: {round(stats.get('opr', {}).get('dcPoints', 0), 2)}")
+                st.write(f"NP OPR: {round(stats.get('opr', {}).get('totalPointsNp', 0), 2)}")
+            with detail_cols[2]:
+                st.write("**Other**")
+                st.write(f"TBP: {stats.get('tb1', 'N/A')}")
+                st.write(f"RS: {stats.get('rp', 'N/A')}")
+                st.write(f"NP Max: {stats.get('max', {}).get('totalPointsNp', 'N/A')}")
+
+            # Matches for target Event
+            st.markdown("### Match History")
+            matches = fetch_event_matches(season, target_event)
+            team_matches = [m for m in matches if any(t.get('teamNumber') == team_num for t in m.get('teams', []))]
+            
+            if team_matches:
+                match_rows = []
+                for m in team_matches:
+                    scores = m.get('scores', {})
+                    red_score = scores.get('red', {})
+                    blue_score = scores.get('blue', {})
+                    team_entry = next(t for t in m.get('teams') if t.get('teamNumber') == team_num)
+                    alliance = team_entry.get('alliance')
+                    
+                    match_rows.append({
+                        "Match": f"{m.get('tournamentLevel')} {m.get('id')}",
+                        "Alliance": alliance,
+                        "Total Points": red_score.get('totalPoints') if alliance == "Red" else blue_score.get('totalPoints'),
+                        "Auto": red_score.get('autoPoints') if alliance == "Red" else blue_score.get('autoPoints'),
+                        "Teleop": red_score.get('dcPoints') if alliance == "Red" else blue_score.get('dcPoints'),
+                        "Penalty": red_score.get('penaltyPointsByOpp') if alliance == "Red" else blue_score.get('penaltyPointsByOpp'),
+                        "Result": "W" if (red_score.get('totalPoints', 0) > blue_score.get('totalPoints', 0) and alliance == "Red") or 
+                                       (blue_score.get('totalPoints', 0) > red_score.get('totalPoints', 0) and alliance == "Blue") else "L"
+                    })
+                st.table(pd.DataFrame(match_rows))
+            else:
+                st.info("No matches played yet at this event.")
+        else:
+            st.info(f"Team {team_num} hasn't competed at {target_event} or data is unavailable.")
+
+    # --- Tab 3: EPA Ranking ---
+    with tab3:
+        st.subheader("EPA Formula Calculation")
+        st.markdown(r"""
+        Formula:
+        $\Delta = \frac{K \times ((\text{alliance\_score} - \text{predicted\_alliance\_EPA}) - M \times (\text{opponent\_score} - \text{predicted\_opponent\_EPA}))}{\text{teams\_per\_alliance}}$
+        $new\_EPA = old\_EPA + \Delta$
+        """)
+        
+        # Calculate EPA for the Championship event (ILCMP)
+        matches = fetch_event_matches(season, target_event)
+        epa_val, epa_history = calculate_epa(matches, team_num)
+        
+        st.metric("Current Calculated EPA", round(epa_val, 2))
+        
+        if epa_history:
+            st.line_chart(epa_history)
+            st.caption("EPA Trend over Championship Matches")
+        else:
+            st.info("Not enough match data to calculate EPA trend.")
+
+    # --- Tab 4: Team Profile ---
+    with tab4:
+        st.subheader("Team Scout Profile")
+        
+        profiles = load_profiles()
+        current_profile = profiles.get(str(team_num), "")
+        
+        # Real-time Edit
+        new_profile = st.text_area("Edit Team Profile", value=current_profile, height=300)
+        
+        if st.button("Save Profile"):
+            save_profile(team_num, new_profile)
+            st.success("Profile saved successfully!")
+            st.rerun()
+            
+        st.divider()
+        st.markdown("### Profile Content")
+        if current_profile:
+            st.markdown(current_profile)
+        else:
+            st.write("No profile written yet.")
+            
+        # File Upload Option
+        st.subheader("Upload Profile Document")
+        uploaded_file = st.file_uploader("Upload a document", type=['txt', 'md'])
+        if uploaded_file:
+            # Check if the file has already been read in this session to avoid errors
+            try:
+                # Use string conversion to ensure we get text, or decode if bytes
+                raw_data = uploaded_file.getvalue()
+                content = raw_data.decode("utf-8")
+                
+                if st.button("Use Uploaded Content"):
+                    save_profile(team_num, content)
+                    st.success("Uploaded profile saved!")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
+
+else:
+    st.error(f"Team {team_num} not found. Please check the team number.")
+
+# Footer
+st.divider()
+st.caption("Data provided by FTCScout.org REST API")
