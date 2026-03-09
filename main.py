@@ -162,6 +162,8 @@ with st.sidebar:
     season = st.number_input("Season", min_value=2019, max_value=2026, value=2024)
     target_event = st.text_input("Championship Event Code", value="ILCMP")
     
+    highlight_opacity = st.slider("Highlight Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.05)
+    
     if st.button("Refresh Data"):
         st.cache_data.clear()
 
@@ -332,7 +334,7 @@ if team_data:
             
             # Display the table
             def highlight_team(row):
-                return ['background-color: #ffff00' if row['team number'] == team_num else '' for _ in row]
+                return [f'background-color: rgba(255, 255, 0, {highlight_opacity})' if row['team number'] == team_num else '' for _ in row]
             
             st.dataframe(ranking_df.style.apply(highlight_team, axis=1), use_container_width=True, hide_index=True)
             
