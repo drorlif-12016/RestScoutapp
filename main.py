@@ -102,9 +102,14 @@ def calculate_epa(matches, team_number, K=0.5, M=0.0):
     return epa, epa_history
 
 def calculate_event_epas(matches, event_teams, K=0.5, M=0.0):
-    """Calculates final EPA for all teams in the event based on matches."""
-    # Initialize all teams with 0.0 EPA
-    epas = {t.get('teamNumber'): 0.0 for t in event_teams}
+    """Calculates final EPA for all teams in the event based on matches, including breakdowns."""
+    # Initialize all teams with 0.0 EPA for each component
+    epas = {t.get('teamNumber'): {
+        'total': 0.0,
+        'auto': 0.0,
+        'teleop': 0.0,
+        'endgame': 0.0
+    } for t in event_teams}
     
     # Sort matches chronologically
     sorted_matches = sorted(matches, key=lambda x: x.get('actualStartTime', x.get('id', 0)))
@@ -116,27 +121,61 @@ def calculate_event_epas(matches, event_teams, K=0.5, M=0.0):
         scores = match.get('scores', {})
         teams = match.get('teams', [])
         
-        red_score = scores.get('red', {}).get('totalPointsNp', 0)
-        blue_score = scores.get('blue', {}).get('totalPointsNp', 0)
+        red_score_data = scores.get('red', {})
+        blue_score_data = scores.get('blue', {})
+
+        # We use totalPointsNp for total EPA, and specific components for others.
+        # Note: FTC Scout API might have different names for components. 
+        # Looking at Tab 1 logic: autoPoints, dcPoints (Teleop). Endgame might be part of dcPoints or separate.
+        # Based on typical FTC scoring, we'll try to find endgame specifically if available, 
+        # or treat it as a component of Teleop if not explicitly separated in the API response.
+        # However, looking at lines 206-207, 'autoPoints' and 'dcPoints' are used.
         
+        red_total = red_score_data.get('totalPointsNp', 0)
+        blue_total = blue_score_data.get('totalPointsNp', 0)
+        
+        red_auto = red_score_data.get('autoPoints', 0)
+        blue_auto = blue_score_data.get('autoPoints', 0)
+        
+        # In FTC Scout API, dcPoints is often Teleop + Endgame. 
+        # Some seasons/events might have 'endgamePoints'.
+        red_teleop = red_score_data.get('dcPoints', 0)
+        blue_teleop = blue_score_data.get('dcPoints', 0)
+        
+        red_endgame = red_score_data.get('endgamePoints', 0)
+        blue_endgame = blue_score_data.get('endgamePoints', 0)
+        
+        # If endgamePoints exists, we should subtract it from dcPoints to get pure teleop
+        if 'endgamePoints' in red_score_data:
+            red_teleop -= red_endgame
+        if 'endgamePoints' in blue_score_data:
+            blue_teleop -= blue_endgame
+
         red_teams = [t.get('teamNumber') for t in teams if t.get('alliance') == "Red"]
         blue_teams = [t.get('teamNumber') for t in teams if t.get('alliance') == "Blue"]
         
-        # Predicted scores = sum of EPAs of teams on alliance
-        predicted_red = sum(epas.get(tn, 0.0) for tn in red_teams)
-        predicted_blue = sum(epas.get(tn, 0.0) for tn in blue_teams)
-        
-        # Update Red teams
-        if red_teams:
-            delta_red = (K * ((red_score - predicted_red) - M * (blue_score - predicted_blue))) / len(red_teams)
+        if not red_teams or not blue_teams:
+            continue
+
+        # Helper to update component EPAs
+        def update_component(comp_key, red_val, blue_val):
+            pred_red = sum(epas.get(tn, {}).get(comp_key, 0.0) for tn in red_teams)
+            pred_blue = sum(epas.get(tn, {}).get(comp_key, 0.0) for tn in blue_teams)
+            
+            delta_red = (K * ((red_val - pred_red) - M * (blue_val - pred_blue))) / len(red_teams)
+            delta_blue = (K * ((blue_val - pred_blue) - M * (red_val - pred_red))) / len(blue_teams)
+            
             for tn in red_teams:
-                epas[tn] = epas.get(tn, 0.0) + delta_red
-                
-        # Update Blue teams
-        if blue_teams:
-            delta_blue = (K * ((blue_score - predicted_blue) - M * (red_score - predicted_red))) / len(blue_teams)
+                if tn in epas:
+                    epas[tn][comp_key] += delta_red
             for tn in blue_teams:
-                epas[tn] = epas.get(tn, 0.0) + delta_blue
+                if tn in epas:
+                    epas[tn][comp_key] += delta_blue
+
+        update_component('total', red_total, blue_total)
+        update_component('auto', red_auto, blue_auto)
+        update_component('teleop', red_teleop, blue_teleop)
+        update_component('endgame', red_endgame, blue_endgame)
                 
     return epas
 
@@ -323,14 +362,30 @@ if team_data:
             ranking_data = []
             for t in event_teams:
                 tn = t.get('teamNumber')
+                team_epas = all_epas.get(tn, {'total': 0.0, 'auto': 0.0, 'teleop': 0.0, 'endgame': 0.0})
+                
+                # Fetch team's specific stats for record if available
+                # Note: target_event_data is for the SELECTED team. We need it for ALL teams.
+                # However, event_teams usually contains basic info.
+                # To be efficient, we'll use the stats from event_teams if available.
+                stats = t.get('stats', {})
+                record = f"{stats.get('wins', 0)}-{stats.get('losses', 0)}-{stats.get('ties', 0)}"
+                
                 ranking_data.append({
                     "team number": tn,
                     "team name": t.get('name', 'Unknown'),
-                    "team EPA": round(all_epas.get(tn, 0.0), 2)
+                    "EPA": round(team_epas.get('total', 0.0), 1),
+                    "Auto EPA": round(team_epas.get('auto', 0.0), 1),
+                    "Teleop EPA": round(team_epas.get('teleop', 0.0), 1),
+                    "Endgame EPA": round(team_epas.get('endgame', 0.0), 1),
+                    "Record": record
                 })
             
             # Sort by EPA descending
-            ranking_df = pd.DataFrame(ranking_data).sort_values(by="team EPA", ascending=False).reset_index(drop=True)
+            ranking_df = pd.DataFrame(ranking_data).sort_values(by="EPA", ascending=False).reset_index(drop=True)
+            
+            # Add Rank column at the beginning
+            ranking_df.insert(0, 'Rank', ranking_df.index + 1)
             
             # Display the table
             def highlight_team(row):
