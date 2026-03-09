@@ -40,6 +40,15 @@ def fetch_event_matches(season, event_code):
     except:
         return []
 
+@st.cache_data(ttl=600)
+def fetch_event_teams(season, event_code):
+    url = f"{BASE_URL}/events/{season}/{event_code}/teams"
+    try:
+        response = requests.get(url)
+        return response.json() if response.status_code == 200 else []
+    except:
+        return []
+
 def get_last_event_before(events, target_event_code):
     """Finds the last event in chronological order before the target_event_code."""
     if not events:
@@ -92,6 +101,45 @@ def calculate_epa(matches, team_number, K=0.5, M=0.0):
         
     return epa, epa_history
 
+def calculate_event_epas(matches, event_teams, K=0.5, M=0.0):
+    """Calculates final EPA for all teams in the event based on matches."""
+    # Initialize all teams with 0.0 EPA
+    epas = {t.get('teamNumber'): 0.0 for t in event_teams}
+    
+    # Sort matches chronologically
+    sorted_matches = sorted(matches, key=lambda x: x.get('actualStartTime', x.get('id', 0)))
+    
+    for match in sorted_matches:
+        if not match.get('hasBeenPlayed'):
+            continue
+            
+        scores = match.get('scores', {})
+        teams = match.get('teams', [])
+        
+        red_score = scores.get('red', {}).get('totalPointsNp', 0)
+        blue_score = scores.get('blue', {}).get('totalPointsNp', 0)
+        
+        red_teams = [t.get('teamNumber') for t in teams if t.get('alliance') == "Red"]
+        blue_teams = [t.get('teamNumber') for t in teams if t.get('alliance') == "Blue"]
+        
+        # Predicted scores = sum of EPAs of teams on alliance
+        predicted_red = sum(epas.get(tn, 0.0) for tn in red_teams)
+        predicted_blue = sum(epas.get(tn, 0.0) for tn in blue_teams)
+        
+        # Update Red teams
+        if red_teams:
+            delta_red = (K * ((red_score - predicted_red) - M * (blue_score - predicted_blue))) / len(red_teams)
+            for tn in red_teams:
+                epas[tn] = epas.get(tn, 0.0) + delta_red
+                
+        # Update Blue teams
+        if blue_teams:
+            delta_blue = (K * ((blue_score - predicted_blue) - M * (red_score - predicted_red))) / len(blue_teams)
+            for tn in blue_teams:
+                epas[tn] = epas.get(tn, 0.0) + delta_blue
+                
+    return epas
+
 def load_profiles():
     if os.path.exists(PROFILES_FILE):
         try:
@@ -130,7 +178,7 @@ if team_data:
     
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Last Event Stats", 
-        "🏆 ILCMP Stats", 
+        "🏆 Championship Stats",
         "📈 EPA Ranking", 
         "📝 Team Profile"
     ])
@@ -259,24 +307,37 @@ if team_data:
 
     # --- Tab 3: EPA Ranking ---
     with tab3:
-        st.subheader("EPA Formula Calculation")
-        st.markdown(r"""
-        Formula:
-        $\Delta = \frac{K \times ((\text{alliance\_score} - \text{predicted\_alliance\_EPA}) - M \times (\text{opponent\_score} - \text{predicted\_opponent\_EPA}))}{\text{teams\_per\_alliance}}$
-        $new\_EPA = old\_EPA + \Delta$
-        """)
+        st.subheader(f"EPA Rankings at {target_event}")
         
-        # Calculate EPA for the Championship event (ILCMP)
-        matches = fetch_event_matches(season, target_event)
-        epa_val, epa_history = calculate_epa(matches, team_num)
+        # Fetch all teams and matches at the event
+        event_teams = fetch_event_teams(season, target_event)
+        event_matches = fetch_event_matches(season, target_event)
         
-        st.metric("Current Calculated EPA", round(epa_val, 2))
-        
-        if epa_history:
-            st.line_chart(epa_history)
-            st.caption("EPA Trend over Championship Matches")
+        if event_teams and event_matches:
+            # Calculate EPAs for all teams
+            all_epas = calculate_event_epas(event_matches, event_teams)
+            
+            # Prepare data for the ranking table
+            ranking_data = []
+            for t in event_teams:
+                tn = t.get('teamNumber')
+                ranking_data.append({
+                    "team number": tn,
+                    "team name": t.get('name', 'Unknown'),
+                    "team EPA": round(all_epas.get(tn, 0.0), 2)
+                })
+            
+            # Sort by EPA descending
+            ranking_df = pd.DataFrame(ranking_data).sort_values(by="team EPA", ascending=False).reset_index(drop=True)
+            
+            # Display the table
+            def highlight_team(row):
+                return ['background-color: #ffff00' if row['team number'] == team_num else '' for _ in row]
+            
+            st.dataframe(ranking_df.style.apply(highlight_team, axis=1), use_container_width=True, hide_index=True)
+            
         else:
-            st.info("Not enough match data to calculate EPA trend.")
+            st.info(f"No team or match data available for {target_event} to generate rankings.")
 
     # --- Tab 4: Team Profile ---
     with tab4:
