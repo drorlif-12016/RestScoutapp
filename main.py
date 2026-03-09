@@ -228,7 +228,7 @@ if team_data:
     with tab1:
         if last_event:
             st.subheader(f"Data from {last_event.get('eventCode')}")
-            stats = last_event.get('stats', {})
+            stats = last_event.get('stats') or {}
             
             # Key Stats
             col1, col2, col3, col4 = st.columns(4)
@@ -288,7 +288,7 @@ if team_data:
     with tab2:
         if target_event_data and target_event_data.get('stats'):
             st.subheader(f"Championship Performance: {target_event}")
-            stats = target_event_data.get('stats', {})
+            stats = target_event_data.get('stats') or {}
             
             # Key Stats (Copy-pasted logic from Tab 1 for same layout)
             col1, col2, col3, col4 = st.columns(4)
@@ -368,7 +368,7 @@ if team_data:
                 # Note: target_event_data is for the SELECTED team. We need it for ALL teams.
                 # However, event_teams usually contains basic info.
                 # To be efficient, we'll use the stats from event_teams if available.
-                stats = t.get('stats', {})
+                stats = t.get('stats') or {}
                 record = f"{stats.get('wins', 0)}-{stats.get('losses', 0)}-{stats.get('ties', 0)}"
                 
                 ranking_data.append({
