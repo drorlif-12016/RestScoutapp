@@ -205,10 +205,11 @@ if team_data:
     st.header(f"Team {team_num}: {team_data.get('name')}")
     st.write(f"**Location:** {team_data.get('city')}, {team_data.get('state')}, {team_data.get('country')}")
     
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 Last Event Stats", 
         "🏆 Championship Stats",
         "📈 EPA Ranking", 
+        "🥇 OPR Ranking",
         "📝 Team Profile"
     ])
     
@@ -384,8 +385,50 @@ if team_data:
         else:
             st.info(f"No team or match data available for {target_event} to generate rankings.")
 
-    # --- Tab 4: Team Profile ---
+    # --- Tab 4: OPR Ranking ---
     with tab4:
+        st.subheader(f"OPR Rankings at {target_event}")
+        
+        # Fetch all teams at the event
+        event_teams = fetch_event_teams(season, target_event)
+        
+        if event_teams:
+            # Prepare data for the OPR ranking table
+            opr_ranking_data = []
+            for t in event_teams:
+                tn = t.get('teamNumber')
+                stats = t.get('stats') or {}
+                opr_stats = stats.get('opr', {})
+                
+                record = f"{stats.get('wins', 0)}-{stats.get('losses', 0)}-{stats.get('ties', 0)}"
+                
+                opr_ranking_data.append({
+                    "team number": tn,
+                    "team name": t.get('name', 'Unknown'),
+                    "OPR": round(opr_stats.get('totalPointsNp', 0.0), 1),
+                    "Auto OPR": round(opr_stats.get('autoPoints', 0.0), 1),
+                    "Teleop OPR": round(opr_stats.get('dcPoints', 0.0), 1),
+                    "NP Max": stats.get('max', {}).get('totalPointsNp', 0),
+                    "Record": record
+                })
+            
+            # Sort by OPR descending
+            opr_ranking_df = pd.DataFrame(opr_ranking_data).sort_values(by="OPR", ascending=False).reset_index(drop=True)
+            
+            # Add Rank column at the beginning
+            opr_ranking_df.insert(0, 'Rank', opr_ranking_df.index + 1)
+            
+            # Display the table
+            def highlight_team_opr(row):
+                return [f'background-color: rgba(255, 255, 0, {highlight_opacity})' if row['team number'] == team_num else '' for _ in row]
+            
+            st.dataframe(opr_ranking_df.style.apply(highlight_team_opr, axis=1), use_container_width=True, hide_index=True)
+            
+        else:
+            st.info(f"No team data available for {target_event} to generate OPR rankings.")
+
+    # --- Tab 5: Team Profile ---
+    with tab5:
         st.subheader("Team Scout Profile")
         
         profiles = load_profiles()
