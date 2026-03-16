@@ -220,15 +220,24 @@ if team_data:
             stats = last_event.get('stats') or {}
             
             # Key Stats
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             col1.metric("Rank", stats.get('rank', 'N/A'))
-            col2.metric("OPR", round(stats.get('opr', {}).get('totalPointsNp', 0), 2))
-            col3.metric("Record", f"{stats.get('wins', 0)}-{stats.get('losses', 0)}-{stats.get('ties', 0)}")
-            col4.metric("Avg Score", round(stats.get('avg', {}).get('totalPoints', 0), 2))
+            
+            # Fetch matches and teams for the last event to calculate EPA
+            last_event_code = last_event.get('eventCode')
+            last_event_matches = fetch_event_matches(season, last_event_code)
+            last_event_teams = fetch_event_teams(season, last_event_code)
+            last_event_epas = calculate_event_epas(last_event_matches, last_event_teams)
+            team_last_epa = last_event_epas.get(team_num, {'total': 0.0, 'auto': 0.0, 'teleop': 0.0, 'endgame': 0.0})
+            
+            col2.metric("EPA", round(team_last_epa.get('total', 0.0), 1))
+            col3.metric("OPR", round(stats.get('opr', {}).get('totalPointsNp', 0), 2))
+            col4.metric("Record", f"{stats.get('wins', 0)}-{stats.get('losses', 0)}-{stats.get('ties', 0)}")
+            col5.metric("Avg Score", round(stats.get('avg', {}).get('totalPoints', 0), 2))
             
             # More Detailed Stats
             st.markdown("### Performance Breakdown")
-            detail_cols = st.columns(3)
+            detail_cols = st.columns(4)
             with detail_cols[0]:
                 st.write("**Averages**")
                 st.write(f"Auto AVG: {round(stats.get('avg', {}).get('autoPoints', 0), 2)}")
@@ -240,6 +249,11 @@ if team_data:
                 st.write(f"Teleop OPR: {round(stats.get('opr', {}).get('dcPoints', 0), 2)}")
                 st.write(f"NP OPR: {round(stats.get('opr', {}).get('totalPointsNp', 0), 2)}")
             with detail_cols[2]:
+                st.write("**EPAs**")
+                st.write(f"Auto EPA: {round(team_last_epa.get('auto', 0.0), 1)}")
+                st.write(f"Teleop EPA: {round(team_last_epa.get('teleop', 0.0), 1)}")
+                st.write(f"Endgame EPA: {round(team_last_epa.get('endgame', 0.0), 1)}")
+            with detail_cols[3]:
                 st.write("**Other**")
                 st.write(f"TBP: {stats.get('tb1', 'N/A')}")
                 st.write(f"RS: {stats.get('rp', 'N/A')}")
