@@ -61,10 +61,10 @@ def get_last_event_before(events, target_event_code):
     valid_events.sort(key=lambda x: x.get('updatedAt', ''), reverse=True)
     return valid_events[0]
 
-def calculate_epa(matches, team_number, K=0.5, M=0.0):
+def calculate_epa(matches, team_number, K=0.5):
     """
-    Simplistic EPA calculation based on matches in the event.
-    Formula: delta = (K * ((alliance_score - predicted_alliance_EPA) - M * (opponent_score - predicted_opponent_EPA))) / teams_per_alliance
+    EPA calculation based on matches in the event.
+    Formula: delta = K * (alliance_score - predicted_alliance_EPA) / teams_per_alliance
     new_EPA = old_EPA + delta
     """
     epa = 0.0
@@ -83,25 +83,22 @@ def calculate_epa(matches, team_number, K=0.5, M=0.0):
             continue
             
         alliance = team_entry.get('alliance')
-        opp_alliance = "Blue" if alliance == "Red" else "Red"
         
         alliance_score = scores.get(alliance.lower(), {}).get('totalPointsNp', 0)
-        opponent_score = scores.get(opp_alliance.lower(), {}).get('totalPointsNp', 0)
         
-        # Simple prediction: use current EPA as prediction for the whole alliance
+        # Prediction: use current EPA as prediction for the whole alliance
         # Assuming 2 teams per alliance
         predicted_alliance_EPA = epa * 2 
-        predicted_opponent_EPA = 0 # unknown without full event context
         
         teams_per_alliance = 2
         
-        delta = (K * ((alliance_score - predicted_alliance_EPA) - M * (opponent_score - predicted_opponent_EPA))) / teams_per_alliance
+        delta = K * (alliance_score - predicted_alliance_EPA) / teams_per_alliance
         epa += delta
         epa_history.append(epa)
         
     return epa, epa_history
 
-def calculate_event_epas(matches, event_teams, K=0.5, M=0.0):
+def calculate_event_epas(matches, event_teams, K=0.5):
     """Calculates final EPA for all teams in the event based on matches, including breakdowns."""
     # Initialize all teams with 0.0 EPA for each component
     epas = {t.get('teamNumber'): {
@@ -124,21 +121,12 @@ def calculate_event_epas(matches, event_teams, K=0.5, M=0.0):
         red_score_data = scores.get('red', {})
         blue_score_data = scores.get('blue', {})
 
-        # We use totalPointsNp for total EPA, and specific components for others.
-        # Note: FTC Scout API might have different names for components. 
-        # Looking at Tab 1 logic: autoPoints, dcPoints (Teleop). Endgame might be part of dcPoints or separate.
-        # Based on typical FTC scoring, we'll try to find endgame specifically if available, 
-        # or treat it as a component of Teleop if not explicitly separated in the API response.
-        # However, looking at lines 206-207, 'autoPoints' and 'dcPoints' are used.
-        
         red_total = red_score_data.get('totalPointsNp', 0)
         blue_total = blue_score_data.get('totalPointsNp', 0)
         
         red_auto = red_score_data.get('autoPoints', 0)
         blue_auto = blue_score_data.get('autoPoints', 0)
         
-        # In FTC Scout API, dcPoints is often Teleop + Endgame. 
-        # Some seasons/events might have 'endgamePoints'.
         red_teleop = red_score_data.get('dcPoints', 0)
         blue_teleop = blue_score_data.get('dcPoints', 0)
         
@@ -162,8 +150,8 @@ def calculate_event_epas(matches, event_teams, K=0.5, M=0.0):
             pred_red = sum(epas.get(tn, {}).get(comp_key, 0.0) for tn in red_teams)
             pred_blue = sum(epas.get(tn, {}).get(comp_key, 0.0) for tn in blue_teams)
             
-            delta_red = (K * ((red_val - pred_red) - M * (blue_val - pred_blue))) / len(red_teams)
-            delta_blue = (K * ((blue_val - pred_blue) - M * (red_val - pred_red))) / len(blue_teams)
+            delta_red = K * (red_val - pred_red) / len(red_teams)
+            delta_blue = K * (blue_val - pred_blue) / len(blue_teams)
             
             for tn in red_teams:
                 if tn in epas:
@@ -197,8 +185,8 @@ def save_profile(team_number, profile_text):
 # --- Sidebar Inputs ---
 with st.sidebar:
     st.header("Search Settings")
-    team_num = st.number_input("Team Number", min_value=1, value=18225)
-    season = st.number_input("Season", min_value=2019, max_value=2026, value=2024)
+    team_num = st.number_input("Team Number", min_value=1, value=12016)
+    season = st.number_input("Season", min_value=2019, max_value=2050, value=2026)
     target_event = st.text_input("Championship Event Code", value="ILCMP")
     
     highlight_opacity = st.slider("Highlight Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.05)
