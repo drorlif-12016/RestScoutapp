@@ -171,22 +171,51 @@ def load_profiles():
     if os.path.exists(PROFILES_FILE):
         try:
             with open(PROFILES_FILE, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+                # Migration: if data is old format (team_num: string), convert to (team_num: [string])
+                updated = False
+                for team_id in data:
+                    if isinstance(data[team_id], str):
+                        data[team_id] = [{"name": "Default Profile", "content": data[team_id]}]
+                        updated = True
+                if updated:
+                    save_all_profiles(data)
+                return data
         except:
             return {}
     return {}
 
-def save_profile(team_number, profile_text):
-    profiles = load_profiles()
-    profiles[str(team_number)] = profile_text
+def save_all_profiles(profiles):
     with open(PROFILES_FILE, 'w') as f:
-        json.dump(profiles, f)
+        json.dump(profiles, f, indent=4)
+
+def save_profile(team_number, profile_index, profile_name, profile_content):
+    profiles = load_profiles()
+    team_id = str(team_number)
+    if team_id not in profiles:
+        profiles[team_id] = []
+    
+    new_profile = {"name": profile_name, "content": profile_content}
+    
+    if profile_index is None:
+        profiles[team_id].append(new_profile)
+    elif 0 <= profile_index < len(profiles[team_id]):
+        profiles[team_id][profile_index] = new_profile
+    
+    save_all_profiles(profiles)
+
+def delete_profile(team_number, profile_index):
+    profiles = load_profiles()
+    team_id = str(team_number)
+    if team_id in profiles and 0 <= profile_index < len(profiles[team_id]):
+        profiles[team_id].pop(profile_index)
+        save_all_profiles(profiles)
 
 # --- Sidebar Inputs ---
 with st.sidebar:
     st.header("Search Settings")
     team_num = st.number_input("Team Number", min_value=1, value=12016)
-    season = st.number_input("Season", min_value=2019, max_value=2050, value=2026)
+    season = st.number_input("Season", min_value=2019, max_value=2050, value=2025)
     target_event = st.text_input("Championship Event Code", value="ILCMP")
     
     highlight_opacity = st.slider("Highlight Opacity", min_value=0.0, max_value=1.0, value=1.0, step=0.05)
@@ -445,25 +474,50 @@ if team_data:
     with tab5:
         st.subheader("Team Scout Profile")
         
-        profiles = load_profiles()
-        current_profile = profiles.get(str(team_num), "")
+        profiles_list = load_profiles().get(str(team_num), [])
         
-        # Real-time Edit
-        new_profile = st.text_area("Edit Team Profile", value=current_profile, height=300)
-        
-        if st.button("Save Profile"):
-            save_profile(team_num, new_profile)
-            st.success("Profile saved successfully!")
-            st.rerun()
-            
-        st.divider()
-        st.markdown("### Profile Content")
-        if current_profile:
-            st.markdown(current_profile)
+        # Profile Management
+        if not profiles_list:
+            st.info("No profiles written yet.")
+            if st.button("Create First Profile"):
+                save_profile(team_num, None, "Default Profile", "")
+                st.rerun()
         else:
-            st.write("No profile written yet.")
+            profile_names = [p.get('name', 'Unnamed') for p in profiles_list]
+            selected_idx = st.selectbox("Select Profile", range(len(profile_names)), format_func=lambda x: profile_names[x])
+            
+            current_profile = profiles_list[selected_idx]
+            
+            col_edit1, col_edit2 = st.columns([3, 1])
+            with col_edit1:
+                new_name = st.text_input("Profile Name", value=current_profile.get('name', ''))
+            
+            new_content = st.text_area("Edit Team Profile", value=current_profile.get('content', ''), height=300)
+            
+            btn_col1, btn_col2, btn_col3 = st.columns(3)
+            if btn_col1.button("Save Changes"):
+                save_profile(team_num, selected_idx, new_name, new_content)
+                st.success("Profile updated!")
+                st.rerun()
+            
+            if btn_col2.button("Add New Profile"):
+                save_profile(team_num, None, "New Profile", "")
+                st.rerun()
+                
+            if btn_col3.button("Delete This Profile"):
+                delete_profile(team_num, selected_idx)
+                st.warning("Profile deleted.")
+                st.rerun()
+            
+            st.divider()
+            st.markdown(f"### Profile: {current_profile.get('name')}")
+            if current_profile.get('content'):
+                st.markdown(current_profile.get('content'))
+            else:
+                st.write("*No content in this profile yet.*")
             
         # File Upload Option
+        st.divider()
         st.subheader("Upload Profile Document")
         uploaded_file = st.file_uploader("Upload a document", type=['txt', 'md'])
         if uploaded_file:
@@ -471,11 +525,16 @@ if team_data:
             try:
                 # Use string conversion to ensure we get text, or decode if bytes
                 raw_data = uploaded_file.getvalue()
-                content = raw_data.decode("utf-8")
+                try:
+                    content = raw_data.decode("utf-8")
+                except UnicodeDecodeError:
+                    # Fallback to Latin-1 if UTF-8 fails (common for some Windows-encoded files)
+                    content = raw_data.decode("latin-1")
                 
-                if st.button("Use Uploaded Content"):
-                    save_profile(team_num, content)
-                    st.success("Uploaded profile saved!")
+                upload_name = st.text_input("Uploaded Profile Name", value=uploaded_file.name)
+                if st.button("Add Uploaded Content as New Profile"):
+                    save_profile(team_num, None, upload_name, content)
+                    st.success("Uploaded profile added!")
                     st.rerun()
             except Exception as e:
                 st.error(f"Error reading file: {e}")
